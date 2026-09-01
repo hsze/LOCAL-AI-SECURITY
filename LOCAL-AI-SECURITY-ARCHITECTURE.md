@@ -192,6 +192,46 @@ flowchart TB
     class LLM model
 ```
 
+### Production RAG authorization and safety flow
+
+Purview and source permissions answer whether a user may access sensitive information. Prompt Shields answers whether otherwise authorized content contains instructions intended to manipulate the AI. These controls address different risks and should be applied together.
+
+```mermaid
+flowchart TB
+    classDef identity fill:#e8f1fb,stroke:#2563a6,color:#10253f
+    classDef control fill:#fff2cc,stroke:#b7791f,color:#3d2b00
+    classDef data fill:#e8f7ee,stroke:#2f855a,color:#153d29
+    classDef blocked fill:#fdecec,stroke:#b83232,color:#4a1515
+    classDef model fill:#f1ecfa,stroke:#7553a6,color:#2f2145
+
+    U[Authenticated user] --> Q[User question]
+    Q --> PS1[Prompt Shields<br/>inspect user prompt]
+    PS1 -->|Attack detected| BLOCK1[Block or audit request]
+    PS1 -->|Allowed| RET[Search for relevant documents]
+
+    DOCS[(Documents with source permissions<br/>and sensitivity labels)] --> AUTH[Enforce source authorization<br/>and label-based usage rights]
+    RET --> AUTH
+    AUTH -->|User not authorized| BLOCK2[Exclude document<br/>and record access decision]
+    AUTH -->|Authorized| PS2[Prompt Shields for Documents]
+
+    PS2 -->|Indirect injection| BLOCK3[Exclude context or block request]
+    PS2 -->|Clean| CTX[Add approved document<br/>to RAG context]
+    CTX --> LLM[Local model inference]
+    LLM --> OUT[Output safety and<br/>sensitive-data controls]
+    OUT -->|Unsafe or disallowed| BLOCK4[Suppress response<br/>and record decision]
+    OUT -->|Approved| USER[Return answer to user]
+
+    class U,Q identity
+    class PS1,AUTH,PS2,OUT control
+    class DOCS,RET,CTX,USER data
+    class BLOCK1,BLOCK2,BLOCK3,BLOCK4 blocked
+    class LLM model
+```
+
+For example, a confidential payroll document can be clean from a prompt-injection perspective but still unavailable to an unauthorized user. Conversely, a public webpage can be accessible to everyone yet contain an indirect prompt injection. Sensitivity labels do not indicate malicious content, and Prompt Shields does not grant document access.
+
+This is the recommended production flow. The validated Test 2.1 lab uses local text files and does not currently implement Entra-authenticated retrieval, Purview sensitivity-label evaluation, label-aware indexing, or DLP enforcement.
+
 The inference context has three logically separate parts:
 
 ```text
