@@ -50,10 +50,10 @@ flowchart LR
 | Microsoft Defender for Endpoint (MDE) | Discover Ollama runtime and model-related process activity on the endpoint | Validated |
 | Ollama and `tinyllama:latest` | Run local inference on `127.0.0.1:11434` | Validated |
 | Protected RAG application | Retrieve local documents, construct grounded context, enforce inline controls, and log evidence | Test 2.1 validated |
-| Azure AI Content Safety resource | Detect direct and indirect prompt injection and classify harmful model output | Test 2.1 validated; Test 2.2 input gate implemented |
+| Azure AI Content Safety resource | Detect direct and indirect prompt injection and classify harmful model output | Test 2.1 and Test 2.2 input/output controls validated |
 | Microsoft Sentinel | Ingest metadata-only RAG security events and create alerts/incidents | Test 2.1 validated |
-| Microsoft Agent Framework | Build the local tool-using .NET agent over Ollama | Test 2.2 built; VM execution pending |
-| OpenTelemetry | Emit agent and inference traces without sensitive message content | Local Test 2.2 instrumentation built |
+| Microsoft Agent Framework | Build the local .NET agent over Ollama with a constrained application-controlled lookup | Test 2.2 validated on the Windows endpoint |
+| OpenTelemetry | Emit agent and inference traces without sensitive message content | Test 2.2 metadata-only instrumentation validated locally |
 | Agent 365 | Give the agent a tenant identity and centralized governance/observability | Planned, not connected |
 
 ## Ask 1: identify unsanctioned local models
@@ -364,7 +364,7 @@ ViolenceSeverity:  1
 
 This produced a confirmed high-severity Microsoft Sentinel incident.
 
-## Test 2.2: agent architecture and target state
+## Test 2.2: validated local agent and target state
 
 Test 2.2 is isolated from Test 2.1. It uses the same local Ollama endpoint and Content Safety resource but separate application files and logs.
 
@@ -377,28 +377,35 @@ flowchart LR
     U[User] --> L[Run-AgentTest22.ps1]
     L --> PS[Prompt Shields gate]
     PS -->|Blocked| LOG[(Test 2.2 metadata log)]
-    PS -->|Allowed| AF[Microsoft Agent Framework<br/>ChatClientAgent]
-    AF --> TOOL[Read-only lookup tool]
+    PS -->|Allowed| TOOL[Application-controlled<br/>read-only lookup]
+    TOOL --> AF[Microsoft Agent Framework<br/>ChatClientAgent]
     AF --> OT[OpenTelemetry<br/>sensitive capture disabled]
     AF --> O[Ollama / TinyLlama]
+    O --> OUT[Output safety analysis<br/>EightSeverityLevels]
+    OUT -->|Unsafe| LOG
+    OUT -->|Allowed| GROUND[Tool-result grounding check]
+    GROUND -->|Grounded or safe fallback| ANSWER[Answer returned]
 
     PS --> CS[Azure AI Content Safety<br/>shared service, separate request]
+    OUT --> CS
     OT -. S2S export after onboarding .-> A365[Agent 365 identity,<br/>observability and governance]
     A365 -. supported visibility .-> GOV[Defender, Purview,<br/>Microsoft 365 admin center]
 
-    class U,L,PS,LOG,AF,TOOL,OT built
+    class U,L,PS,LOG,AF,TOOL,OT,OUT,GROUND,ANSWER built
     class O,CS shared
     class A365,GOV future
 ```
 
 Current state:
 
-- The .NET 8 Agent Framework application is built and published.
-- Prompt Shields runs before model invocation and fails closed.
-- The only tool is a fixed, harmless, read-only fact lookup.
-- OpenTelemetry sensitive content capture is disabled.
+- The self-contained .NET 8 Agent Framework application is deployed and validated on the Windows endpoint.
+- Prompt Shields blocks direct prompt injection before model invocation and fails closed when unavailable.
+- The only tool is a fixed, harmless, read-only fact lookup selected by trusted application code.
+- TinyLlama does not support Ollama native tool calling; the application supplies the lookup result as constrained context and enforces exact grounding or a deterministic fallback.
+- Generated output is analyzed with `EightSeverityLevels` and suppressed at severity `1` or greater in Block mode.
+- Output analysis fails closed, and OpenTelemetry sensitive-content capture is disabled.
+- Test 2.2 writes security decisions and category severities to a separate metadata-only local log.
 - Agent 365 registration, Agent ID, permission grant, S2S export, and portal validation are not yet complete.
-- Test 2.2 output moderation is still to be added and validated.
 
 Agent 365 complements Content Safety; it does not replace the inline Prompt Shields or output policy gates.
 
@@ -411,7 +418,7 @@ Agent 365 complements Content Safety; it does not replace the inline Prompt Shie
 | RAG awareness | User prompts and retrieved documents are separately inspected; poisoned content can be audited or blocked | Dedicated groundedness/entailment validation is not currently implemented |
 | Vulnerability awareness | Runtime/process discovery, safety testing, direct/indirect injection detection, and harmful-output blocking are demonstrated | Model provenance and behavioral risk do not map cleanly to CVEs; continuous red-team and integrity controls are needed |
 | SOC visibility | Dedicated DCE/DCR/table/rule created a validated Sentinel incident from metadata-only evidence | Test 2.2 has not yet been connected to separate Sentinel resources or Agent 365 |
-| Agent governance | Agent Framework app, read-only tool, and local metadata-only telemetry are built | Agent ID and Agent 365 tenant onboarding remain pending |
+| Agent governance | Agent Framework app, application-controlled read-only lookup, grounding enforcement, input/output safety, and metadata-only telemetry are validated | Agent ID, service-to-service export, and Agent 365 tenant onboarding remain pending |
 
 ## Security design principles
 
