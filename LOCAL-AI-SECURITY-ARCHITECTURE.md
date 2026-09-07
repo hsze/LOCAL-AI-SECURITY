@@ -18,7 +18,7 @@ flowchart LR
     classDef security fill:#fff2cc,stroke:#b7791f,color:#3d2b00
     classDef cloud fill:#e8f7ee,stroke:#2f855a,color:#153d29
     classDef soc fill:#fdecec,stroke:#b83232,color:#4a1515
-    classDef future fill:#f1ecfa,stroke:#7553a6,color:#2f2145,stroke-dasharray: 5 4
+    classDef governance fill:#f1ecfa,stroke:#7553a6,color:#2f2145
 
     U[User or local client] --> A[Protected RAG app<br/>Test 2.1]
     U --> B[Agent Framework app<br/>Test 2.2]
@@ -34,13 +34,17 @@ flowchart LR
     A --> E[Metadata-only security events]
     E --> S[Microsoft Sentinel<br/>analytics and incidents]
 
-    B -. planned identity and traces .-> G[Agent 365<br/>governance and observability]
+    B --> T[Caller-attributed<br/>OpenTelemetry traces]
+    T --> G[Agent 365<br/>identity, governance and observability]
+    G --> D
+    G --> P[Microsoft Purview]
+    G --> AC[Microsoft 365 admin center]
 
     class U,A,B,O,M endpoint
     class C security
     class D cloud
     class E,S soc
-    class G future
+    class G,T,P,AC governance
 ```
 
 ### Component responsibilities
@@ -53,8 +57,8 @@ flowchart LR
 | Azure AI Content Safety resource | Detect direct and indirect prompt injection and classify harmful model output | Test 2.1 and Test 2.2 input/output controls validated |
 | Microsoft Sentinel | Ingest metadata-only RAG security events and create alerts/incidents | Test 2.1 validated |
 | Microsoft Agent Framework | Build the local .NET agent over Ollama with a constrained application-controlled lookup | Test 2.2 validated on the Windows endpoint |
-| OpenTelemetry | Emit agent and inference traces without sensitive message content | Test 2.2 metadata-only instrumentation validated locally |
-| Agent 365 | Give the agent a tenant identity and centralized governance/observability | Planned, not connected |
+| OpenTelemetry | Emit caller-attributed agent and inference traces without sensitive message content | Test 2.2 metadata-only export validated end to end |
+| Agent 365 | Give the agent a tenant identity and route observability to Microsoft 365 governance, security, and compliance experiences | Registered and validated in Microsoft 365 admin center, Defender, and Purview audit |
 
 ## Ask 1: identify unsanctioned local models
 
@@ -95,6 +99,13 @@ The lab demonstrated:
 - `llama-server.exe --offline` corroborated local inference.
 - Device and user attribution identified the Windows lab endpoint and test operator.
 - TinyLlama was identified by name through command-line behavior, not as a guaranteed standalone model inventory object.
+
+Defender uses two related but distinct inventory views. Ollama appears under **Local
+agents** because Defender for Endpoint recognizes it as a supported endpoint runtime.
+The custom `LocalAgent22` application appears in the general governed **Agents**
+inventory because it has a registered Entra Agent ID and Agent 365 telemetry. Running
+locally does not by itself make an arbitrary executable a Defender-classified Local
+agent.
 
 A renamed model, custom runtime, removable-media copy, or direct memory load may require behavioral detections, artifact hashes, application control, and an approved-model inventory. Discovery is therefore broader than matching the string `TinyLlama`.
 
@@ -364,7 +375,7 @@ ViolenceSeverity:  1
 
 This produced a confirmed high-severity Microsoft Sentinel incident.
 
-## Test 2.2: validated local agent and target state
+## Test 2.2: validated local agent and Agent 365 integration
 
 Test 2.2 is isolated from Test 2.1. It uses the same local Ollama endpoint and Content Safety resource but separate application files and logs.
 
@@ -372,7 +383,7 @@ Test 2.2 is isolated from Test 2.1. It uses the same local Ollama endpoint and C
 flowchart LR
     classDef built fill:#e8f1fb,stroke:#2563a6,color:#10253f
     classDef shared fill:#fff2cc,stroke:#b7791f,color:#3d2b00
-    classDef future fill:#f1ecfa,stroke:#7553a6,color:#2f2145,stroke-dasharray: 5 4
+    classDef governance fill:#f1ecfa,stroke:#7553a6,color:#2f2145
 
     U[User] --> L[Run-AgentTest22.ps1]
     L --> PS[Prompt Shields gate]
@@ -388,12 +399,13 @@ flowchart LR
 
     PS --> CS[Azure AI Content Safety<br/>shared service, separate request]
     OUT --> CS
-    OT -. S2S export after onboarding .-> A365[Agent 365 identity,<br/>observability and governance]
-    A365 -. supported visibility .-> GOV[Defender, Purview,<br/>Microsoft 365 admin center]
+    CALLER[Human Entra object ID<br/>and UPN] --> OT
+    OT -->|Secretless S2S export| A365[Agent 365 identity,<br/>observability and governance]
+    A365 --> GOV[Defender, Purview,<br/>Microsoft 365 admin center]
 
     class U,L,PS,LOG,AF,TOOL,OT,OUT,GROUND,ANSWER built
     class O,CS shared
-    class A365,GOV future
+    class A365,GOV,CALLER governance
 ```
 
 Current state:
@@ -405,9 +417,36 @@ Current state:
 - Generated output is analyzed with `EightSeverityLevels` and suppressed at severity `1` or greater in Block mode.
 - Output analysis fails closed, and OpenTelemetry sensitive-content capture is disabled.
 - Test 2.2 writes security decisions and category severities to a separate metadata-only local log.
-- Agent 365 registration, Agent ID, permission grant, S2S export, and portal validation are not yet complete.
+- `LocalAgent22` is registered with an Entra Agent ID derived from an approved Agent Identity Blueprint.
+- Secretless S2S export uses the VM managed identity and the Agent 365 observability application permission; no client secret or certificate was introduced.
+- A canonical caller-attributed `InvokeAgent` probe returned HTTP 200 and `sent` for the `flashpoint`, `sentinel`, and `esp` sinks.
+- Defender `CloudAppEvents` contains the expected `HumanToAgent` operation, human caller, conversation, target Agent ID, and target Blueprint ID.
+- Microsoft 365 admin center shows one active user, one session, and a populated last-used date for `LocalAgent22` after the reporting pipeline refreshed.
+- Purview Audit and Defender advanced hunting contain Agent 365 activity records.
 
 Agent 365 complements Content Safety; it does not replace the inline Prompt Shields or output policy gates.
+
+### Agent 365 identity and correlation details
+
+The root `invoke_agent` span carries both target-agent identity and human-caller
+identity. For a human-triggered run, `user.id` contains the caller's Microsoft Entra
+object ID and `user.email` contains the user principal name. Without these fields, the
+invocation can be ingested but usage reporting cannot attribute it to a person.
+
+In Defender advanced hunting, an `InvokeAgent` record maps the target identity to
+`RawEventData.TargetAgentId` and `RawEventData.TargetAgentBlueprintID`. The generic
+`AgentId` and `AgentBlueprintId` fields are operation-specific and can be zero GUIDs on
+the root invocation without indicating a target-identity failure.
+
+The OTLP trace ID is not currently exposed in `CloudAppEvents`. Correlate a submitted
+run by its span ID in `RawEventData.OpId`, or by `RawEventData.ConversationId` across
+the run. Microsoft 365 usage reports can conceal UPNs according to the tenant-wide
+report privacy setting.
+
+Agent 365 portal surfaces are eventually consistent. Defender hunting data appeared
+before the Microsoft 365 activity counters and last-used field. The later appearance of
+one active user, one session, and the last-used date confirmed that the same accepted
+invocation propagated through the downstream analytics pipeline.
 
 ## Coverage and limitations
 
@@ -417,8 +456,8 @@ Agent 365 complements Content Safety; it does not replace the inline Prompt Shie
 | Prompt-level insight | Protected RAG records local interactions and exports metadata-only decisions; correlation IDs connect stages | Direct Ollama CLI usage bypasses application instrumentation; fully air-gapped prompts cannot be cloud-inspected |
 | RAG awareness | User prompts and retrieved documents are separately inspected; poisoned content can be audited or blocked | Dedicated groundedness/entailment validation is not currently implemented |
 | Vulnerability awareness | Runtime/process discovery, safety testing, direct/indirect injection detection, and harmful-output blocking are demonstrated | Model provenance and behavioral risk do not map cleanly to CVEs; continuous red-team and integrity controls are needed |
-| SOC visibility | Dedicated DCE/DCR/table/rule created a validated Sentinel incident from metadata-only evidence | Test 2.2 has not yet been connected to separate Sentinel resources or Agent 365 |
-| Agent governance | Agent Framework app, application-controlled read-only lookup, grounding enforcement, input/output safety, and metadata-only telemetry are validated | Agent ID, service-to-service export, and Agent 365 tenant onboarding remain pending |
+| SOC visibility | Dedicated DCE/DCR/table/rule created a validated Sentinel incident for Test 2.1; Agent 365 activity for Test 2.2 is queryable in Defender and present in Purview Audit | Test 2.2 does not use the separate Test 2.1 custom Sentinel ingestion path; downstream portal refresh is asynchronous |
+| Agent governance | Agent Framework controls, Entra Agent ID, secretless S2S export, caller attribution, Agent 365 registration, activity reporting, and Defender inventory are validated | Defender Local agents remains signature-based endpoint discovery, so it lists Ollama separately from the governed `LocalAgent22` identity |
 
 ## Security design principles
 
@@ -428,7 +467,8 @@ Agent 365 complements Content Safety; it does not replace the inline Prompt Shie
 4. **Separate telemetry by sensitivity.** Keep full interactions local unless retention and privacy requirements explicitly permit central collection.
 5. **Fail closed for required safety controls.** A Content Safety authentication or service failure must not silently send the prompt to the model in Block mode.
 6. **Constrain capabilities.** A text model becomes materially riskier when an application grants file, shell, email, browser, or MCP tools.
-7. **Correlate without over-collecting.** Use correlation IDs and decision metadata to connect endpoint, application, classifier, and SOC evidence.
+7. **Correlate without over-collecting.** Use span IDs, conversation IDs, and decision metadata to connect endpoint, application, classifier, and SOC evidence.
+8. **Carry caller identity explicitly.** Human-to-agent telemetry needs the caller's Entra object ID to support attributable usage reporting.
 
 ## Customer takeaway
 
@@ -436,6 +476,6 @@ The solution uses three complementary layers:
 
 - **MDE discovers local AI runtime and model activity**, including activity that bypasses the managed application.
 - **Instrumented RAG and agent applications provide prompt-level policy and evidence**, including separate inspection of retrieved content.
-- **Azure AI Content Safety and Sentinel detect, enforce, and operationalize unsafe behavior**, while the planned Agent 365 integration adds identity and centralized agent governance.
+- **Azure AI Content Safety and Sentinel detect, enforce, and operationalize unsafe behavior**, while Agent 365 adds Entra-backed identity, caller-attributed observability, and centralized governance across Microsoft 365, Defender, and Purview.
 
 This is not universal prompt surveillance for every local model process. It is a defense-in-depth architecture that combines endpoint discovery for unsanctioned use with stronger inline controls for sanctioned local AI applications.
