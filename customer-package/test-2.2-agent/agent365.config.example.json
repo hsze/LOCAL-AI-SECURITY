@@ -1,0 +1,7 @@
+{
+  "tenantId": "<tenant-id>",
+  "blueprintAppId": "<agent-identity-blueprint-application-id>",
+  "agentAppId": "<child-agent-identity-application-id>",
+  "callerUserId": "<human-caller-entra-object-id>",
+  "callerUserEmail": "<human-caller-user-principal-name>"
+}

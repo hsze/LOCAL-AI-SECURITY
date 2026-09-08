@@ -1,0 +1,12 @@
+**/bin/
+**/obj/
+**/logs/
+*.jsonl
+runtime-assessment.json
+*.zip
+*.pfx
+*.pem
+*.key
+*.cer
+*.crt
+a365.generated.config.json
